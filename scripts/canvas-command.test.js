@@ -183,7 +183,8 @@ function createFakeSdk() {
       };
       return { canvas, commands: { marker: "commands" }, runtime: canvas.runtime, store };
     },
-    createXyqCanvasOpencodeToolDefinitions({ allocateNodeId, runtime, schema }) {
+    createXyqCanvasOpencodeToolDefinitions({ allocateAssetId, allocateNodeId, runtime, schema }) {
+      assert.strictEqual(allocateAssetId, allocateNodeId);
       return {
         apply_mutations: {
           args: { intent: schema.string(), mutations: schema.array(schema.unknown()) },

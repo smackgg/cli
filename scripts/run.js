@@ -55,7 +55,7 @@ if (args[0] === "install") {
     } catch (_) {
       console.error(
         "\nFailed to prepare pippit-tool-cli binary.\n" +
-        "Make sure Go is installed and available in PATH, then retry.\n"
+        "Check your network connection and reinstall the npm package to download the prebuilt binary.\n"
       );
       process.exit(1);
     }

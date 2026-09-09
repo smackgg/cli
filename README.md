@@ -259,6 +259,54 @@ pippit-tool-cli canvas command run create_biz_node \
 
 `canvas command` 由 npm 包内固定的 Canvas SDK 运行时提供，复用网页登录、`canvas get`、`canvas allocate` 和 `canvas apply`；不会读取或打印 Access Key，也不直接选择服务端地址。公开目录只包含已登记的 mutation 和业务命令，不开放任意内部 command 调用。
 
+`list` 和 `describe` 的 `input_schema` 提供字段、必填项、枚举、嵌套结构和默认值。`create_biz_node.nodeKind` 包含 `scene3d` 与 `timeline-composition`。模型名称、自定义布局策略等动态字段会明确说明来源；开放字段允许保留业务扩展属性。
+
+3D 导演台和多轨道都通过外层画布节点定位，其编辑内容保存在节点引用的独立文档或草稿资产中。先查询取得内部对象、轨道、片段 ID 和版本，再执行编辑：
+
+```bash
+pippit-tool-cli canvas command describe xyq.scene3d.apply
+pippit-tool-cli canvas command run xyq.scene3d.query \
+  --canvas-id CANVAS_ID --input '{"nodeId":"DIRECTOR_NODE_ID"}'
+pippit-tool-cli canvas command run xyq.scene3d.apply \
+  --canvas-id CANVAS_ID \
+  --input '{"nodeId":"DIRECTOR_NODE_ID","operations":[{"command":"create_node","args":{"kind":"camera","id":"camera-2","name":"Close-up"}}]}'
+
+pippit-tool-cli canvas command describe xyq.timeline.apply
+pippit-tool-cli canvas command run xyq.timeline.query \
+  --canvas-id CANVAS_ID --input '{"nodeId":"TIMELINE_NODE_ID"}'
+# expectedRevision 使用上一步返回的 draft.revision
+pippit-tool-cli canvas command run xyq.timeline.apply \
+  --canvas-id CANVAS_ID \
+  --input '{"nodeId":"TIMELINE_NODE_ID","expectedRevision":0,"commands":[{"type":"set_output_size","payload":{"width":1920,"height":1080}}]}'
+```
+
+领域命令的 `dryRun:true` 会完整预演编辑并保留原文档。多轨时间以整数微秒表示；3D 关键帧以帧表示，动作片段 `trimStart/trimEnd` 以源动画秒数表示。3D 对象旋转以度表示，几何体的 `theta/phi/arc` 参数以弧度表示，具体以字段 schema 为准。新增多轨素材须复用已有来源，或关联真实画布素材节点。截图、渲染导出、上传和生成仍需各自的运行环境。
+
+运行结构为 `npm 的 JS 入口 → Canvas SDK CJS → Go 二进制的资产命令`。Go 二进制可独立执行其原生命令，无需安装 Go；`canvas command` 需要 npm 包中的 Node.js 入口与 CJS 运行时。
+
+图片或视频节点通过 `xyq.generation.update_prompt` 更新提示词，`prompt` 直接使用前端已有的标签文本。CLI 与前端粘贴调用同一份 SDK 标签解析、引用匹配和连边逻辑：
+
+```bash
+pippit-tool-cli canvas command describe xyq.generation.update_prompt
+pippit-tool-cli canvas command run xyq.generation.update_prompt \
+  --canvas-id CANVAS_ID \
+  --input '{"nodeId":"TARGET_IMAGE_NODE_ID","prompt":"参考 <node-asset label=\"人物\">REFERENCE_IMAGE_NODE_ID</node-asset> 的人物，改为雨夜街景"}'
+```
+
+示例 ID 应替换为真实画布节点 ID。`get_asset` 可查看当前节点与草稿，`describe` 返回完整参数 schema。角色连边沿用前端既有默认选择与草稿处理，标签属性原样保留给编辑器和提交解析器。无需另传 `text/reference` 数组、`asset` 包装或 `referenceSource`。
+
+直接上传或从素材库选出的素材可以没有节点。对于已在目标 `generation.references` 草稿中的素材，直接使用其 `pippitAssetId`：
+
+```bash
+pippit-tool-cli canvas command run xyq.generation.update_prompt \
+  --canvas-id CANVAS_ID \
+  --input '{"nodeId":"TARGET_IMAGE_NODE_ID","prompt":"参考 <pippit-asset-id label=\"参考图\">PIPPIT_ASSET_ID_IN_DRAFT</pippit-asset-id> 的人物"}'
+```
+
+当前版本只解析已有画布候选与目标草稿中的引用；找不到的普通标签返回 `UNRESOLVED_PROMPT_REFERENCE`，不写入文档。仅拿到 `canvas upload` 返回的 ID，还不会自动查询并加入草稿。新独立素材 ID 的自动解析属于后续能力。已有独立素材草稿可由前端上传或素材库流程产生，视频生成可使用其中的图片、视频和音频。同一媒体 ID 若同时匹配到画布源节点，则遵循前端现有的节点优先规则建立关联。`canvas get --asset-id PIPPIT_ASSET_ID` 可查询外部素材，但查询本身不添加引用。
+
+该命令先在隔离文档上按前端原有顺序执行 SDK commands，再把实际补丁一次性提交，保留模型参数、已有引用及 caption/title/name 等展示字段。`dryRun:true` 只执行隔离预演，原文档和撤销历史不变；清空 prompt 不移除引用。节点引用由现有生成流程转换成 `node_asset_refs`，独立图片进入 `pippit_asset_ids`，视频生成的独立素材按类型进入 `images`、`videos`、`audios`。本命令不触发生成、上传或远端素材查询。不要用浅合并的 `update_asset.contentPatch.generation` 更新提示词，否则可能覆盖其他生成参数。
+
 ## 生图 CLI
 
 `generate-image` 会上传本地参考图片，然后向综合 Nest Agent 提交生图请求：

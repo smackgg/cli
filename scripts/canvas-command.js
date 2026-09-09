@@ -573,7 +573,7 @@ function definitionToJSON(name, definition) {
   }
   return {
     description: definition.description,
-    input_schema: {
+    input_schema: definition.inputSchema || {
       properties,
       ...(required.length ? { required } : {}),
       type: "object",
@@ -584,6 +584,7 @@ function definitionToJSON(name, definition) {
 
 function createDefinitions(sdk, runtime, allocateNodeId) {
   const definitions = sdk.createXyqCanvasOpencodeToolDefinitions({
+    allocateAssetId: allocateNodeId,
     allocateNodeId,
     runtime,
     schema: createSchemaFactory(),
@@ -666,6 +667,16 @@ function writeJSON(stream, value) {
 function decorateCatalogEntry(sdk, entry) {
   const output = { ...entry };
   if (entry.name === "apply_mutations") {
+    const properties = entry.input_schema?.properties;
+    if (properties?.atomic) {
+      output.input_schema = {
+        ...entry.input_schema,
+        properties: {
+          ...properties,
+          atomic: { ...properties.atomic, default: true, description: "The CLI always selects atomic execution for apply_mutations." },
+        },
+      };
+    }
     output.mutation_definitions = sdk.XYQ_CANVAS_OPENCODE_MUTATION_DEFINITIONS;
   }
   if (entry.name === "apply_mutations" || entry.name === "invoke_command") {
@@ -688,14 +699,14 @@ function createPublicCatalog(sdk, definitions) {
   for (const definition of sdk.XYQ_CANVAS_OPENCODE_MUTATION_DEFINITIONS) {
     append({
       description: definition.description,
-      input_schema: { description: definition.input, type: "object" },
+      input_schema: definition.inputSchema || { description: definition.input, type: "object" },
       name: definition.kind,
     }, { kind: "mutation", name: definition.kind });
   }
   for (const definition of sdk.XYQ_CANVAS_REGISTERED_COMMAND_DEFINITIONS) {
     append({
       description: definition.description,
-      input_schema: { description: definition.input, type: "object" },
+      input_schema: definition.inputSchema || { description: definition.input, type: "object" },
       name: definition.name,
     }, { kind: "registered", name: definition.name });
   }
@@ -794,6 +805,12 @@ async function runCanvasCommand(args, options = {}) {
   let saveError;
   let serializedResult;
   const allocatedAssetIds = [];
+  const allocateAssetId = async () => {
+    const [assetId] = await assetRuntime.client.ids.allocate(1);
+    if (!assetId) throw new Error("资产服务未返回新资产 ID");
+    allocatedAssetIds.push(assetId);
+    return assetId;
+  };
   let standalone;
   const persistence = authStatus.credential_scope
     ? createFilePersistence({
@@ -804,8 +821,14 @@ async function runCanvasCommand(args, options = {}) {
     : createMemoryPersistence();
   try {
     standalone = sdk.createXyqCanvasCommandRuntime({
+      allocateAssetId,
       canvasId: parsed.canvasId,
+      command: { name: parsed.commandName, input },
       persistence,
+      queryAsset: async (assetId) => {
+        const asset = await assetRuntime.client.assets.getAsset({ mediaType: "text", pippitAssetId: assetId });
+        return { asset: asset?.text?.content ?? null, version: asset?.version };
+      },
       sync: { flush: { maxAttempts: 1, maxBatchSize: 1 } },
       transportFactory: createCanvasTransportFactory({ assetRuntime, loader }),
     });
@@ -817,12 +840,19 @@ async function runCanvasCommand(args, options = {}) {
     const definitions = createDefinitions(
       sdk,
       { checkpoints: checkpointStore, permissions: CANVAS_COMMAND_PERMISSIONS, store: standalone.store },
-      async () => {
-        const [assetId] = await assetRuntime.client.ids.allocate(1);
-        allocatedAssetIds.push(assetId);
-        return assetId;
-      }
+      allocateAssetId
     );
+    if (typeof standalone.prepareCommand === "function") {
+      if (route.kind === "registered") {
+        await standalone.prepareCommand(route.name, input);
+      } else if (route.name === "apply_mutations" && !input.dryRun && Array.isArray(input.mutations)) {
+        for (const mutation of input.mutations) {
+          if (mutation?.kind === "invoke_command") {
+            await standalone.prepareCommand(mutation.name, mutation.args?.[0]);
+          }
+        }
+      }
+    }
     try {
       serializedResult = await executePublicCommand(route, definitions, input);
     } catch (error) {

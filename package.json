@@ -9,8 +9,9 @@
     "postinstall": "node scripts/install.js",
     "prepack": "node scripts/prepare-canvas-runtime.js",
     "prepare:canvas-runtime": "node scripts/prepare-canvas-runtime.js",
-    "test": "node scripts/version-check.test.js && node scripts/skills.test.js && node scripts/install-wizard.test.js && node scripts/canvas-command.test.js && node scripts/prepare-canvas-runtime.test.js && go test ./... && go vet ./...",
-    "verify:canvas-runtime": "node scripts/prepare-canvas-runtime.js --check-only"
+    "test": "node scripts/version-check.test.js && node scripts/skills.test.js && node scripts/install-wizard.test.js && node scripts/canvas-command.test.js && node scripts/canvas-command-schema.test.js && node scripts/prepare-canvas-runtime.test.js && go test ./... && go vet ./...",
+    "verify:canvas-runtime": "node scripts/prepare-canvas-runtime.js --check-only",
+    "test:canvas-runtime": "node scripts/canvas-command-runtime.test.js"
   },
   "os": [
     "darwin",
