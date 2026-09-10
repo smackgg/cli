@@ -8,6 +8,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const { createHash, randomBytes } = require("crypto");
 const { pathToFileURL } = require("url");
+const { assertOutputBudget, describeEntry, listCatalog, SCHEMA_VERSION } = require("./canvas-command-discovery");
 
 const DEFAULT_SDK_MODULE = path.join(
   __dirname,
@@ -36,9 +37,15 @@ const CANVAS_COMMAND_PERMISSIONS = [
 ];
 
 const COMMAND_HELP = `用法:
-  pippit-tool-cli canvas command list
-  pippit-tool-cli canvas command describe <command>
+  pippit-tool-cli canvas command list [--category <category>]
+  pippit-tool-cli canvas command describe <command> [--operation <name>] [--node-kind <kind>] [--path <schema.path>]
+  pippit-tool-cli canvas command guide [topic]
+  pippit-tool-cli canvas command schema [command]
   pippit-tool-cli canvas command run <command> --canvas-id <id> [--input <JSON> | --file <path|->]
+
+list 返回简短索引；describe 按层展示字段和可选操作，使用 --path 展开 schema_path。
+guide 按主题说明时间、引用和工作流；schema 显式导出完整 schema（可能很大）。
+这些发现入口无需登录；run 需要目标画布的访问权限。
 `;
 
 function isCanvasCommand(args) {
@@ -53,17 +60,30 @@ function parseCanvasCommandArgs(args) {
   }
 
   const action = values[0];
-  if (!new Set(["list", "describe", "run"]).has(action)) {
+  if (!new Set(["list", "describe", "schema", "guide", "run"]).has(action)) {
     throw new Error(`未知的 canvas command 子命令：${action}`);
   }
   let canvasId = "";
   let commandName = "";
   let filePath = "";
   let input = "";
+  let hasRunOptions = false;
+  const discovery = {};
+  const discoveryFlags = { "--category": "category", "--operation": "operation", "--node-kind": "nodeKind", "--path": "schemaPath" };
   for (let index = 1; index < values.length; index += 1) {
     const value = values[index];
     if (value === "--help" || value === "-h") return { action: "help" };
+    const flag = value.split("=", 1)[0];
+    if (discoveryFlags[flag]) {
+      const next = value.includes("=") ? value.slice(flag.length + 1) : values[++index];
+      if (!next || next.startsWith("--")) throw new Error(`参数 ${flag} 缺少取值`);
+      const key = discoveryFlags[flag];
+      if (discovery[key]) throw new Error(`重复参数：${flag}`);
+      discovery[key] = next;
+      continue;
+    }
     if (value === "--canvas-id" || value === "--file" || value === "--input") {
+      hasRunOptions = true;
       const next = values[index + 1];
       if (next === undefined || next.startsWith("--")) {
         throw new Error(`参数 ${value} 缺少取值`);
@@ -75,14 +95,17 @@ function parseCanvasCommandArgs(args) {
       continue;
     }
     if (value.startsWith("--canvas-id=")) {
+      hasRunOptions = true;
       canvasId = value.slice("--canvas-id=".length).trim();
       continue;
     }
     if (value.startsWith("--file=")) {
+      hasRunOptions = true;
       filePath = value.slice("--file=".length);
       continue;
     }
     if (value.startsWith("--input=")) {
+      hasRunOptions = true;
       input = value.slice("--input=".length);
       continue;
     }
@@ -91,14 +114,22 @@ function parseCanvasCommandArgs(args) {
     commandName = value;
   }
 
+  const allowed = action === "list" ? ["category"] : action === "describe" ? ["operation", "nodeKind", "schemaPath"] : [];
+  for (const key of Object.keys(discovery)) {
+    if (!allowed.includes(key)) throw new Error(`canvas command ${action} 不接受参数 ${key}`);
+  }
   if (action === "list") {
-    if (commandName || canvasId || filePath || input) throw new Error("canvas command list 不接受额外参数");
-    return { action };
+    if (commandName || hasRunOptions) throw new Error("canvas command list 不接受额外参数");
+    return { action, ...discovery };
+  }
+  if (action === "schema" || action === "guide") {
+    if (hasRunOptions) throw new Error(`canvas command ${action} 不接受运行参数`);
+    return { action, commandName };
   }
   if (!commandName) throw new Error(`canvas command ${action} 缺少 command 名称`);
   if (action === "describe") {
-    if (canvasId || filePath || input) throw new Error("canvas command describe 不接受运行参数");
-    return { action, commandName };
+    if (hasRunOptions) throw new Error("canvas command describe 不接受运行参数");
+    return { action, commandName, ...discovery };
   }
   if (!canvasId) throw new Error("canvas command run 缺少必填参数 --canvas-id");
   if (input && filePath) throw new Error("--input 和 --file 不能同时使用");
@@ -571,9 +602,16 @@ function definitionToJSON(name, definition) {
     properties[argument] = schemaToJSON(schema);
     if (!schema[OPTIONAL_SCHEMA]) required.push(argument);
   }
+  const inputSchema = definition.inputSchema;
   return {
     description: definition.description,
-    input_schema: definition.inputSchema || {
+    input_schema: inputSchema ? {
+      ...inputSchema,
+      ...(inputSchema.properties ? { properties: Object.fromEntries(Object.entries(inputSchema.properties).map(([key, schema]) => [key, {
+        ...(properties[key]?.description ? { description: properties[key].description } : {}),
+        ...schema,
+      }])) } : {}),
+    } : {
       properties,
       ...(required.length ? { required } : {}),
       type: "object",
@@ -664,7 +702,7 @@ function writeJSON(stream, value) {
   stream.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-function decorateCatalogEntry(sdk, entry) {
+function decorateCatalogEntry(entry) {
   const output = { ...entry };
   if (entry.name === "apply_mutations") {
     const properties = entry.input_schema?.properties;
@@ -677,10 +715,6 @@ function decorateCatalogEntry(sdk, entry) {
         },
       };
     }
-    output.mutation_definitions = sdk.XYQ_CANVAS_OPENCODE_MUTATION_DEFINITIONS;
-  }
-  if (entry.name === "apply_mutations" || entry.name === "invoke_command") {
-    output.registered_commands = sdk.XYQ_CANVAS_REGISTERED_COMMAND_DEFINITIONS;
   }
   return output;
 }
@@ -690,7 +724,7 @@ function createPublicCatalog(sdk, definitions) {
   const routes = new Map();
   const append = (entry, route) => {
     if (routes.has(entry.name)) return;
-    entries.push(decorateCatalogEntry(sdk, entry));
+    entries.push(decorateCatalogEntry(entry));
     routes.set(entry.name, route);
   };
   for (const [name, definition] of Object.entries(definitions)) {
@@ -749,6 +783,11 @@ async function runCanvasCommand(args, options = {}) {
     stdout.write(COMMAND_HELP);
     return 0;
   }
+  if (parsed.action === "guide") {
+    const { getGuide, listGuides } = require("./canvas-command-guides");
+    writeJSON(stdout, parsed.commandName ? getGuide(parsed.commandName) : { guides: listGuides(), next: "pippit-tool-cli canvas command guide <topic>" });
+    return 0;
+  }
 
   const sdk = await loadSdk(options);
   assertSdkFunctions(sdk, ["createXyqCanvasOpencodeToolDefinitions"]);
@@ -765,13 +804,21 @@ async function runCanvasCommand(args, options = {}) {
   );
   const { entries: catalog, routes } = createPublicCatalog(sdk, catalogDefinitions);
   if (parsed.action === "list") {
-    writeJSON(stdout, { commands: catalog });
+    writeJSON(stdout, assertOutputBudget(listCatalog(catalog, parsed.category), "list"));
+    return 0;
+  }
+  if (parsed.action === "schema" && !parsed.commandName) {
+    writeJSON(stdout, { schema_version: SCHEMA_VERSION, commands: catalog });
     return 0;
   }
   const catalogEntry = catalog.find((entry) => entry.name === parsed.commandName);
   if (!catalogEntry) throw new Error(`未知的画布 command：${parsed.commandName}`);
   if (parsed.action === "describe") {
-    writeJSON(stdout, catalogEntry);
+    writeJSON(stdout, assertOutputBudget(describeEntry(catalogEntry, parsed, catalog), "describe"));
+    return 0;
+  }
+  if (parsed.action === "schema") {
+    writeJSON(stdout, { schema_version: SCHEMA_VERSION, ...catalogEntry });
     return 0;
   }
 
