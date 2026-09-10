@@ -247,9 +247,21 @@ pippit-tool-cli canvas apply --project-id PROJECT_ID --file ./patch.json
 通过 npm 安装的 CLI 还提供基于同一 Canvas SDK 的语义命令目录：
 
 ```bash
-# 查看全部公开命令及其参数说明
+# 先看精简目录，再按类别或参数定位
 pippit-tool-cli canvas command list
+pippit-tool-cli canvas command list --category timeline
 pippit-tool-cli canvas command describe create_biz_node
+pippit-tool-cli canvas command describe create_biz_node --node-kind role
+pippit-tool-cli canvas command describe xyq.timeline.apply --operation set_output_size
+pippit-tool-cli canvas command describe xyq.generation.update_prompt --path properties.prompt
+
+# 完整 schema 按需导出；不指定命令时导出全部
+pippit-tool-cli canvas command schema xyq.timeline.apply
+pippit-tool-cli canvas command schema
+
+# 离线指南：先取主题索引，再读正文
+pippit-tool-cli canvas command guide
+pippit-tool-cli canvas command guide storyboard
 
 # 由 SDK 业务工厂创建角色节点；修改会通过现有 canvas apply 原子提交
 pippit-tool-cli canvas command run create_biz_node \
@@ -259,7 +271,11 @@ pippit-tool-cli canvas command run create_biz_node \
 
 `canvas command` 由 npm 包内固定的 Canvas SDK 运行时提供，复用网页登录、`canvas get`、`canvas allocate` 和 `canvas apply`；不会读取或打印 Access Key，也不直接选择服务端地址。公开目录只包含已登记的 mutation 和业务命令，不开放任意内部 command 调用。
 
-`list` 和 `describe` 的 `input_schema` 提供字段、必填项、枚举、嵌套结构和默认值。`create_biz_node.nodeKind` 包含 `scene3d` 与 `timeline-composition`。模型名称、自定义布局策略等动态字段会明确说明来源；开放字段允许保留业务扩展属性。
+`list [--category <category>]` 返回精简命令目录；`describe <command>` 说明入口参数，按 `--operation <name>` 查看一种领域操作、按 `--node-kind <kind>` 查看业务节点初始字段、按 `--path <schema.path>` 查看 schema 子路径。需要完整嵌套结构时使用 `schema [command]` 显式导出。`create_biz_node.nodeKind` 包含 `scene3d` 与 `timeline-composition`；字段枚举、必填项、默认值与动态来源以当前安装版本的 schema 为准。
+
+发现输出使用 `schema_version: 2`：`list` 只包含名称、分类和摘要；`describe` 的 `schema_view: "summary"` 表示展示视图，嵌套内容通过 `schema_path` 继续展开，不能直接当作完整校验 schema。原来从 `list` 或 `describe` 读取完整 `input_schema` 的脚本应改用 `schema [command]`。默认索引预算为 16 KiB，单次字段说明预算为 32 KiB；完整导出需要显式调用，执行命令的输入与返回值不受这一发现协议调整影响。
+
+`guide [topic]` 提供无需登录的离线帮助。无主题时仅返回索引，可选 `storyboard`、`prompt-references`、`time`、`timeline`、`scene3d`；正文包含单位、ID 来源、前置条件和最小示例。指南不启用新能力，先用 `list` 确认本机运行时支持哪些命令。故事板指南说明原生 `<duration-ms>` 标签累加与引用格式；目前没有公开的故事板脚本编辑、镜头排序或指定镜头生成领域命令，通用视频生成与资产补丁不能替代其业务流程。
 
 3D 导演台和多轨道都通过外层画布节点定位，其编辑内容保存在节点引用的独立文档或草稿资产中。先查询取得内部对象、轨道、片段 ID 和版本，再执行编辑：
 
@@ -293,7 +309,7 @@ pippit-tool-cli canvas command run xyq.generation.update_prompt \
   --input '{"nodeId":"TARGET_IMAGE_NODE_ID","prompt":"参考 <node-asset label=\"人物\">REFERENCE_IMAGE_NODE_ID</node-asset> 的人物，改为雨夜街景"}'
 ```
 
-示例 ID 应替换为真实画布节点 ID。`get_asset` 可查看当前节点与草稿，`describe` 返回完整参数 schema。角色连边沿用前端既有默认选择与草稿处理，标签属性原样保留给编辑器和提交解析器。无需另传 `text/reference` 数组、`asset` 包装或 `referenceSource`。
+示例 ID 应替换为查询到的真实节点或资产 ID。`get_asset` 可查看当前节点与草稿；`describe` 按需查看参数，`schema` 导出完整输入结构。角色连边沿用前端既有默认选择与草稿处理，标签属性原样保留给编辑器和提交解析器。无需另传 `text/reference` 数组、`asset` 包装或 `referenceSource`；引用类型和独立素材前置条件可查看 `guide prompt-references`。
 
 直接上传或从素材库选出的素材可以没有节点。对于已在目标 `generation.references` 草稿中的素材，直接使用其 `pippitAssetId`：
 
